@@ -1,0 +1,235 @@
+---
+title: "Tech Appendix"
+author: '1719672'
+date: "02/03/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cache= TRUE}
+library(rio)
+
+##Loading the data
+monthYears <- paste0(month.abb[c(7:12,1:12)], "_", c(rep(18,6),rep(19,12)))
+d <- list()
+for (i in 1:length(monthYears)) {
+  filename <- paste0("Appointments_GP_Daily_Dec19/CCG_CSV_", monthYears[i], ".csv")#
+  filename
+  d[[i]] <- import(filename, setclass = "tibble")
+}
+
+library(dplyr)
+library(ggplot2)
+covData <- tibble()
+for (i in 1:length(monthYears)) {
+  covData <- rbind(covData, filter(d[[i]], CCG_NAME=="NHS Coventry and Rugby CCG"))
+}
+
+covData <- select(covData,CCG_CODE, Appointment_Date, APPT_STATUS, HCP_TYPE, APPT_MODE, TIME_BETWEEN_BOOK_AND_APPT,
+                COUNT_OF_APPOINTMENTS)
+
+Appointment_Month <- dmy(paste0("01", substring(covData$Appointment_Date, 3, 9)))
+
+covData <- cbind(covData, Appointment_Month)
+##Adding the patient numbers data
+
+patientData <- import("Appointments_GP_Daily_Dec19/APPOINTMENTS_GP_COVERAGE.csv", setclass = "tibble")
+
+patientData <- select(patientData, COMMISSIONER_ORGANISATION_CODE, Appointment_Month, 
+                      "Included Practices", "Patients registered at included practices")
+
+covPatDat <-  filter(patientData, COMMISSIONER_ORGANISATION_CODE == "05A")
+
+covPatDat$Appointment_Month <- dmy(covPatDat$Appointment_Month)
+
+
+covData <- left_join(covData,
+           select(covPatDat,-c("COMMISSIONER_ORGANISATION_CODE")),
+           by = "Appointment_Month")
+
+covData <- select(covData, -c(Appointment_Month, CCG_CODE))
+
+covData<- filter(covData,HCP_TYPE == "GP")
+
+library(lubridate)
+
+covData$Appointment_Date <- dmy(covData$Appointment_Date)
+
+covData$APPT_STATUS <- factor(covData$APPT_STATUS)
+
+# Creating data set for question 2
+
+
+allData <- tibble()
+for (i in 1:length(monthYears)) {
+  allData <- rbind(allData,d[[i]])
+}
+allData$APPT_STATUS <- factor(allData$APPT_STATUS)
+
+allData <- select(allData,CCG_CODE, Appointment_Date, APPT_STATUS, HCP_TYPE, APPT_MODE, TIME_BETWEEN_BOOK_AND_APPT,
+                COUNT_OF_APPOINTMENTS)
+
+levels(allData$APPT_STATUS)
+print(xtable(table(allData$APPT_STATUS)))
+
+allData$APPT_STATUS <- factor(allData$APPT_STATUS)
+allData$TIME_BETWEEN_BOOK_AND_APPT <- factor(allData$TIME_BETWEEN_BOOK_AND_APPT,
+                                             ordered = TRUE, levels = c("Same Day", "1 Day", "2 to 7 Days",
+                                                                        "8  to 14 Days", "15  to 21 Days",
+                                                                        "22  to 28 Days","More than 28 Days",
+                                                                        "Unknown / Data Issue"))
+library(lubridate)
+allData$Appointment_Date <- dmy(allData$Appointment_Date)
+
+allData <- allData %>% filter(APPT_STATUS %in% c("Attended", "DNA"))
+allData$APPT_STATUS <- droplevels(allData$APPT_STATUS)
+
+```
+
+```{r cache =TRUE}
+library(colorRamps)
+library(RColorBrewer)
+covDailyApp <- covData  %>% group_by(Appointment_Date) %>% summarise(TotalApp = sum(COUNT_OF_APPOINTMENTS))
+
+covDailyApp$Appointment_Date <- ymd(covDailyApp$Appointment_Date)
+
+covDailyApp %>% ggplot() + geom_point(aes(x=Appointment_Date, y=TotalApp, colour = factor(weekdays(Appointment_Date), levels = c("Monday","Tuesday","Wednesday","Thursday",
+                                                                                                                                 "Friday", "Saturday", "Sunday")))) +
+  labs(colour="Weekdays", x= "Appointment Date", y="Total Appointments",
+       title="Number of GP appointments per day in NHS Coventry and Rugby CCG")
+
+
+covDailyApp$Appointment_Month <- rollback(covDailyApp$Appointment_Date, roll_to_first = TRUE)
+
+covDailyApp <- left_join(covDailyApp,
+           select(covPatDat,-c("COMMISSIONER_ORGANISATION_CODE")),
+           by = "Appointment_Month")
+
+
+covDailyApp <- mutate(covDailyApp, Weekday=wday(Appointment_Date, label=TRUE))
+covDailyApp <- mutate(covDailyApp, Month = quarter(Appointment_Date))
+covDailyApp <- mutate(covDailyApp, log_registered_patients = log(`Patients registered at included practices`))
+
+
+
+my_model <- lm(TotalApp ~ 0 + `Patients registered at included practices` +`Included Practices`, data=covDailyApp)
+summary(my_model)
+
+covData <- covData %>% filter(TIME_BETWEEN_BOOK_AND_APPT != "Unknown / Data Issue")
+
+covData$w1w <- ifelse(covData$TIME_BETWEEN_BOOK_AND_APPT %in% c("Same Day", "1 Day", "2 to 7 Days", "8  to 14 Days"), TRUE, FALSE)
+
+covData$Appointment_Month <- rollback(covData$Appointment_Date, roll_to_first = TRUE)
+
+
+
+
+covData %>% group_by(Appointment_Month) %>%
+  count(w1w) %>% mutate(within= n/sum(n)) %>%
+  filter(w1w == TRUE) %>% select(-c("n", "w1w")) %>%
+  ggplot(aes(x=Appointment_Month, y=within)) +
+  geom_bar(stat="identity",fill=rev(grey.colors(18))) +
+  labs(x="Month", y="Percentage seen within 2 weeks",subtitle="July 2018 - December 2019 (inclusive)",
+       caption = "Data from NHS Appointments in General Practice December 2019",
+       title= "The relationship between month and % of patients seen in 2 weeks") +
+  coord_cartesian(ylim=c(0.60,0.7)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_date(date_breaks = "1 month", date_labels =  "%b %Y") +
+  theme(axis.text.x = element_text(angle=90)) 
+covPatDat %>% ggplot + geom_point(aes(x=Appointment_Month, y= `Patients registered at included practices`)) 
+
+covPatDat %>% ggplot + geom_point(aes(x=Appointment_Month, y= `Included Practices`))
+
+covData2 <- covData %>% group_by(Appointment_Month) %>%
+  count(w1w) %>% mutate(within= n/sum(n)) %>%
+  filter(w1w == TRUE) %>% select(-c("n", "w1w")) 
+
+covData2 <- cbind((covData2 %>% ungroup()), covPatDat)
+str
+lm <- lm(within ~ 0 + `Included Practices` + log(`Patients registered at included practices`),covData2[1:14,])
+summary(lm)
+pred <-predict(lm,covData2[15:18, 5:6])
+pred - covData2[15:18,2]
+lm$residuals
+```
+
+```{r}
+library(xtable)
+library(dplyr)
+library(ggplot2)
+theme_set(theme_minimal())
+
+
+
+
+
+correctData <- allData %>% filter(Appointment_Date >= dmy("01DEC2018"))
+
+allData %>% ggplot(aes(x=APPT_STATUS, fill= APPT_STATUS)) + geom_bar() + facet_grid(.~TIME_BETWEEN_BOOK_AND_APPT) +
+  labs(x="Appointment status", y= "Percentage for given waiting period", title = "Appointment status percentages for varying waiting times, from booking to appoinment", caption = "Data from NHS Appointments in General Practice December 2019", subtitle = "December 2018 - December 2019 (inclusive)") +
+  theme(legend.position = "none",
+         text = element_text(size=11),
+        axis.text.x = element_text(angle=90, hjust=1),
+        strip.text.x = element_text(size= 6.8),
+        plot.caption = element_text(size=8))
+
+allData <- allData %>% filter(TIME_BETWEEN_BOOK_AND_APPT != "Unknown / Data Issue")
+
+##This plot is normalised to make comparison fair
+
+allData %>% group_by(TIME_BETWEEN_BOOK_AND_APPT,APPT_STATUS) %>%
+  summarise(n= n()) %>% mutate(freq= 100*n/sum(n))%>% filter(APPT_STATUS != "DNA")%>% ggplot() +
+  geom_bar(aes(x=TIME_BETWEEN_BOOK_AND_APPT,y=freq, fill=TIME_BETWEEN_BOOK_AND_APPT),stat= "identity")+
+  labs(x="Waiting time from booking to appointment", y= "Percentage of patients attending", title = "Appointment status percentages for varying waiting times, from booking to appointment", caption = "Data from NHS Appointments in General Practice December 2019", subtitle = "December 2018 - December 2019 (inclusive)") +
+   theme(legend.position = "none",
+         text = element_text(size=10.5),
+        axis.text.x = element_text(angle=90, hjust=1),
+        strip.text.x = element_text(size= 6.8),
+        plot.caption = element_text(size=8)) +
+  coord_cartesian(ylim=c(60,70)) + scale_fill_manual(values = colorRampPalette(c("springgreen3","red"))(7))
+
+
+library(corrplot)
+library(tidyr)
+
+allData$within1Day <- allData$TIME_BETWEEN_BOOK_AND_APPT %in% c("Same Day", "1 Day")
+prop.test(table(allData$within1Day, allData$APPT_STATUS), correct = FALSE)
+
+
+allData <- mutate(allData, Appointment_Month = floor_date(allData$Appointment_Date, unit= "month"))
+month <- dmy("01DEC2018")
+
+for(i in 0:12){
+  temp <- filter(allData,allData$Appointment_Month == (month + months(i)))
+  print(prop.test(table(temp$within1Day, temp$APPT_STATUS), correct = FALSE))
+}
+
+allData %>% group_by(within1Day,Appointment_Month, APPT_STATUS) %>%
+  summarise(n= n()) %>% mutate(freq= n/sum(n)) %>%
+  filter(APPT_STATUS != "DNA") %>% select(-c("n"))%>%
+  spread(within1Day,freq) %>% ggplot() +
+  geom_dumbbell(aes(x=`FALSE`, xend=`TRUE`,
+                    y=Appointment_Month, group = Appointment_Month),
+                color="#b2b2b2",
+                colour_x="red", colour_xend ="darkgreen",
+                size=2) +
+  labs(x="Percentage of appointments attended",y="Month",
+       title="Plot showing the difference being seen within 1 day makes to attendance levels",subtitle="Waiting over 1 day vs. waiting less" ,  caption = "Data from NHS Appointments in General Practice December 2019") +
+   theme(plot.title = element_text(hjust=0.5,size= 11.8, face="bold"),
+              panel.grid.minor=element_blank(),
+              panel.grid.major.y=element_blank(),
+              panel.grid.major.x=element_line()) +
+  scale_x_continuous(limits=c(0.63,0.685),
+                     labels = scales::percent_format(accuracy = 0.1)) +
+  scale_y_date(date_breaks = "1 month", date_labels =  "%b %Y") +
+  annotate(x=0.683, y= dmy("01DEC2019"), label="Within 1 day",                  color="darkgreen", size=3, geom="text") +
+  annotate(x=0.638, y= dmy("01DEC2019"), label="Over 1 day", 
+           color="red", size=3, geom="text") 
+  
+
+
+```
+
